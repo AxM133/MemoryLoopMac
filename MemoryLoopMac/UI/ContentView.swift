@@ -1,167 +1,244 @@
 import SwiftUI
-
-// Синий стиль для главной кнопки
-struct PrimaryBlueButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 13, weight: .semibold))
-            .padding(.vertical, 10)
-            .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.blue))
-            .foregroundColor(.white)
-            .opacity(configuration.isPressed ? 0.88 : 1)
-    }
-}
+import Combine
 
 struct ContentView: View {
-    @EnvironmentObject var store: MemoryStore
-    @EnvironmentObject var windows: WindowService
-    @EnvironmentObject var appState: AppState
+    @EnvironmentObject private var store: MemoryStore
+    @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var windows: WindowService
 
     @State private var memoText: String = ""
-    @State private var stageIndex: Int = 0
+    @State private var selectedStageIndex: Int = 0
     @State private var historyExpanded: Bool = false
 
+    // тикер для обновления истории раз в секунду
+    @State private var timeTick: Int = 0
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
+        VStack(alignment: .leading, spacing: 24) {
+            headerSection
 
-            Text("Новая карточка").font(.headline).padding(.top, 2)
+            Divider()
 
-            // Ряд 1: поле + интервал
-            HStack(alignment: .center, spacing: 10) {
-                TextField("Слово / число…", text: $memoText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 320, maxWidth: .infinity)
+            newCardSection
 
-                Picker("Интервал", selection: $stageIndex) {
-                    ForEach(0..<store.stages.count, id: \.self) { i in
-                        Text(store.stages[i].title).tag(i)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 120)
-            }
+            Divider()
 
-            // Ряд 2: главная кнопка (полной ширины)
-            Button("Запомнить и напомнить") {
-                let v = memoText.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !v.isEmpty else { return }
-                // Создаём запись и сразу показываем карточку (поверх всех окон)
-                store.createMemo(v, atStage: stageIndex)
-                windows.showCard(text: v)
-                memoText = ""
-            }
-            .buttonStyle(PrimaryBlueButtonStyle())
+            settingsSection
 
-            // Ряд 3: вспомогательные кнопки
-            HStack(spacing: 8) {
-                Button("Случ. число") {
-                    let v = String(Int.random(in: 1000...999999))
-                    store.createMemo(v, atStage: stageIndex)
-                    windows.showCard(text: v)
-                }
-                Button("Случ. слово") {
-                    let words = ["Vector","Lambda","Pixel","Matrix","Neuron","Quasar","Photon","Kernel","Falcon","Echo","Atlas"]
-                    let v = words.randomElement() ?? "Vector"
-                    store.createMemo(v, atStage: stageIndex)
-                    windows.showCard(text: v)
-                }
-            }
-            .buttonStyle(.bordered)
-
-            Divider().padding(.vertical, 4)
-
-            // Настройки
-            Text("Настройки").font(.headline)
-
-            HStack(spacing: 12) {
-                Text("Сопоставление:")
-                Picker("", selection: $store.matchMode) {
-                    Text("Точное").tag(MatchMode.strict)
-                    Text("Левенштейн").tag(MatchMode.fuzzy)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 280)
-            }
-
-            if store.matchMode == .fuzzy {
-                HStack(spacing: 12) {
-                    Text("Порог:")
-                    Slider(value: Binding(get: { store.fuzzyThreshold },
-                                          set: { store.fuzzyThreshold = $0 }),
-                           in: 0.6...0.95)
-                        .frame(width: 220)
-                    Text(String(format: "%.2f", store.fuzzyThreshold))
-                        .monospacedDigit()
-                        .frame(width: 46, alignment: .trailing)
-                }
-            }
-
-            Divider().padding(.vertical, 4)
+            Divider()
 
             historySection
         }
-        .onChange(of: appState.pendingAnswerMemoryId) { _, new in
-            if let id = new {
-                WindowService.shared.showAnswer(memoryId: id)
-                _ = appState.consumePendingAnswerId()
+        .onChange(of: appState.pendingAnswerMemoryId) { _, newValue in
+            guard let id = newValue else { return }
+            DispatchQueue.main.async {
+                _ = appState.consumePendingAnswer()
+                windows.showAnswerSheet(memoryId: id)
             }
         }
-    }
-
-    // MARK: Header
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Memory Loop").font(.title3).bold()
-            Text("Запоминай. Проверяй. Усиливай память.")
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+        // глобальный таймер, чтобы история тикала
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            timeTick &+= 1
         }
     }
 
-    // MARK: История
-    private var historySection: some View {
-        DisclosureGroup(isExpanded: $historyExpanded) {
-            if store.items.isEmpty {
-                Text("Пока пусто. Создай карточку выше.")
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
-            } else {
-                VStack(spacing: 8) {
-                    ForEach(store.items) { item in
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.memo).bold().lineLimit(1).truncationMode(.tail)
-                                HStack(spacing: 6) {
-                                    Text("Следующее:").foregroundStyle(.secondary)
-                                    CountdownLabel(toDate: item.dueAt).foregroundStyle(.secondary)
-                                    Text("• \(store.stages[item.stageIndex].title)")
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                .font(.caption)
-                            }
-                            Spacer(minLength: 8)
-                            Text(item.correct == nil ? "—" : (item.correct! ? "✅" : "❌"))
-                                .font(.title3)
-                                .frame(width: 26)
-                        }
-                        .padding(10)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+    // MARK: - Sections
+
+    private var headerSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Memory Loop")
+                .font(.title2.weight(.bold))
+            Text("Запоминай. Проверяй. Усиливай память.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var newCardSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Новая карточка")
+                .font(.headline)
+
+            HStack(spacing: 8) {
+                TextField("Слово / число / факт…", text: $memoText)
+                    .textFieldStyle(.roundedBorder)
+
+                Picker("Интервал", selection: $selectedStageIndex) {
+                    ForEach(store.stages.indices, id: \.self) { i in
+                        Text(store.stages[i].title).tag(i)
                     }
                 }
-                .padding(.vertical, 4)
+                .frame(width: 90)
             }
-        } label: {
-            HStack {
-                Text("История").font(.headline)
+
+            HStack(spacing: 8) {
+                Button("Случ. число") {
+                    memoText = String(Int.random(in: 10...999_999))
+                }
+
+                Button("Случ. слово") {
+                    memoText = ["orbit", "memory", "focus", "neuron", "vector"].randomElement() ?? "memory"
+                }
+
                 Spacer()
-                Text(historyExpanded ? "Скрыть" : "Показать")
-                    .foregroundStyle(.secondary)
+
+                Button("Запомнить и напомнить") {
+                    startMemorize()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
             }
         }
+    }
+
+    private var settingsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Настройки")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Сопоставление:")
+                    .font(.subheadline)
+
+                HStack {
+                    Picker("", selection: $store.matchMode) {
+                        Text("Точное").tag(MatchMode.strict)
+                        Text("Левенштейн").tag(MatchMode.fuzzy)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 260)
+
+                    Spacer()
+                }
+            }
+
+            if store.matchMode == .fuzzy {
+                HStack {
+                    Text("Порог:")
+                        .font(.subheadline)
+                    Slider(value: $store.fuzzyThreshold, in: 0.5...0.95)
+                    Text(String(format: "%.2f", store.fuzzyThreshold))
+                        .font(.caption)
+                        .frame(width: 40, alignment: .trailing)
+                }
+            }
+
+            Toggle(isOn: $store.autoCycleDefault) {
+                Text("Увеличивать интервал и повторять до 3 успешных попыток")
+            }
+            .toggleStyle(.switch)
+            .font(.subheadline)
+        }
+    }
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("История")
+                    .font(.headline)
+                Spacer()
+            }
+
+            DisclosureGroup(isExpanded: $historyExpanded) {
+                if store.items.isEmpty {
+                    Text("Пока нет карточек.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(store.items) { item in
+                            historyRow(for: item, tick: timeTick)
+                                .id(item.id)
+                        }
+                    }
+                    .padding(.top, 6)
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "clock.arrow.circlepath")
+                    Text("История")
+                        .font(.subheadline)
+                    Spacer()
+                    Text(historyExpanded ? "Скрыть" : "Показать")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    // MARK: - History row
+
+    private func historyRow(for item: MemoryItem, tick: Int) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.memo)
+                    .font(.body)
+
+                let due = item.dueAt
+                if let stage = store.stages[safe: item.stageIndex] {
+
+                    let secondsLeft = max(0, Int(due.timeIntervalSince(Date())))
+                    let total = stage.seconds
+
+                    HStack(spacing: 4) {
+                        Text("Следующее:")
+                        Text("\(secondsLeft)s • \(total >= 60 ? "\(total / 60) мин" : "\(total)s")")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            statusIcon(for: item)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.ultraThinMaterial)
+        )
+    }
+
+    @ViewBuilder
+    private func statusIcon(for item: MemoryItem) -> some View {
+        if item.isFinished {
+            if item.correct == true {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+            } else {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.red)
+            }
+        } else {
+            Image(systemName: "minus.circle")
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: - Actions
+
+    private func startMemorize() {
+        let trimmed = memoText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let stageIndex = max(0, min(selectedStageIndex, store.stages.count - 1))
+        let duration = store.stages[stageIndex].seconds
+
+        store.createMemo(trimmed, atStage: stageIndex, autoCycle: store.autoCycleDefault)
+        windows.showMemorizeCard(text: trimmed, duration: duration)
+
+        memoText = ""
+    }
+}
+
+// MARK: - Safe index helper
+
+fileprivate extension Array {
+    subscript(safe index: Int) -> Element? {
+        (indices.contains(index)) ? self[index] : nil
     }
 }

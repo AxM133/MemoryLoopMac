@@ -1,30 +1,66 @@
 import SwiftUI
 
 struct MemoryCardView: View {
-    let memo: String
+    let value: String
+    let duration: Int
     let onClose: () -> Void
 
+    @State private var remaining: Int
+
+    init(value: String, duration: Int, onClose: @escaping () -> Void) {
+        self.value = value
+        self.duration = max(1, duration)
+        self.onClose = onClose
+        _remaining = State(initialValue: max(1, duration))
+    }
+
     var body: some View {
-        VStack(spacing: 14) {
-            Text("Запомни").font(.title3).opacity(0.7)
+        VStack(spacing: 24) {
+            Text("Запомни")
+                .font(.title2.weight(.semibold))
 
-            Text(memo)
-                .font(.system(size: 48, weight: .bold, design: .rounded))
-                .minimumScaleFactor(0.5)
-                .multilineTextAlignment(.center)
-                .lineLimit(3)
-                .padding(.horizontal, 8)
+            Text(value)
+                .font(.system(size: 42, weight: .bold, design: .rounded))
+                .padding(.horizontal, 24)
 
-            Text("Сконцентрируйся 5–10 секунд, затем закрой окно.")
-                .font(.footnote)
+            Text("Сконцентрируйся \(duration >= 5 ? "5–10 секунд" : "несколько секунд"), затем закрой окно.")
+                .font(.callout)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
-            Button("Закрыть") { onClose() }
-                .keyboardShortcut(.defaultAction)
-                .padding(.top, 4)
+            if remaining > 0 {
+                Text("Окно закроется через \(remaining) сек.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("Закрыть") {
+                onClose()
+            }
+            .keyboardShortcut(.defaultAction)
         }
-        .padding(18)
-        .frame(minWidth: 420, idealWidth: 440, maxWidth: 460,
-               minHeight: 240, idealHeight: 260, maxHeight: 280)
+        .padding(24)
+        .frame(width: 320, height: 220)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.regularMaterial)
+        )
+        .onAppear {
+            startCountdown()
+        }
+    }
+
+    private func startCountdown() {
+        guard remaining > 0 else { return }
+
+        // простой таймер на секундах
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
+            if remaining <= 1 {
+                timer.invalidate()
+                onClose()
+            } else {
+                remaining -= 1
+            }
+        }
     }
 }

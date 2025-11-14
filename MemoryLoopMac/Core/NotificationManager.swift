@@ -3,89 +3,148 @@ import UserNotifications
 import Combine
 
 @MainActor
-final class NotificationManager: ObservableObject {
-    static let shared = NotificationManager()
-    private init() {}
+final class NotificationManager: NSObject, ObservableObject {
 
-    private static let categoryId   = "MEMORY_REMINDER"
-    private static let actionAnswer = "ANSWER_TEXT"
-    private func requestId(for memoryId: String) -> String { "rem-\(memoryId)" }
+    static let shared = NotificationManager()
+    private override init() {
+        super.init()
+    }
+
+    // идентификаторы
+    private static let categoryId      = "MEMORY_REMINDER"
+    private static let actionAnswerId  = "ANSWER_TEXT"
+    private static let userInfoKeyId   = "memoryId"
+
+    // MARK: - Регистрация
 
     func registerCategories() {
         let answer = UNTextInputNotificationAction(
-            identifier: Self.actionAnswer,
+            identifier: Self.actionAnswerId,
             title: "Ответить",
             options: [.authenticationRequired],
             textInputButtonTitle: "Отправить",
             textInputPlaceholder: "Введите значение"
         )
-        let cat = UNNotificationCategory(
+
+        let category = UNNotificationCategory(
             identifier: Self.categoryId,
             actions: [answer],
             intentIdentifiers: [],
             options: [.customDismissAction]
         )
-        UNUserNotificationCenter.current().setNotificationCategories([cat])
+
+        UNUserNotificationCenter.current().setNotificationCategories([category])
     }
 
     func requestPermission() async {
-        _ = try? await UNUserNotificationCenter.current()
-            .requestAuthorization(options: [.alert, .sound, .badge])
-    }
-
-    // Удалить pending + delivered по memoryId
-    func removeAll(for memoryId: String) async {
         let center = UNUserNotificationCenter.current()
-        let prefix = requestId(for: memoryId)
-
-        let pending = await center.pendingNotificationRequests()
-        let pIDs = pending.filter { $0.identifier.hasPrefix(prefix) }.map { $0.identifier }
-        if !pIDs.isEmpty { center.removePendingNotificationRequests(withIdentifiers: pIDs) }
-
-        let delivered = await withCheckedContinuation { (cont: CheckedContinuation<[UNNotification], Never>) in
-            center.getDeliveredNotifications { cont.resume(returning: $0) }
+        do {
+            _ = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+        } catch {
+            print("Notification permission error: \(error)")
         }
-        let dIDs = delivered.map { $0.request }.filter { $0.identifier.hasPrefix(prefix) }.map { $0.identifier }
-        if !dIDs.isEmpty { center.removeDeliveredNotifications(withIdentifiers: dIDs) }
     }
 
-    func scheduleReminder(memoryId: String, dueAt: Date) async throws {
+    // MARK: - Планирование напоминания
+
+    func scheduleReminder(memoryId: String, dueAt: Date) async {
+        let center = UNUserNotificationCenter.current()
+
         let content = UNMutableNotificationContent()
         content.title = "Memory Loop"
-        content.body  = "Пора проверить память. Введите значение."
-        content.sound = .default
+        content.body  = "Что ты запоминал?"
         content.categoryIdentifier = Self.categoryId
-        content.userInfo = ["memoryId": memoryId]
+        content.userInfo = [Self.userInfoKeyId: memoryId]
 
-        let identifier = requestId(for: memoryId) + "-\(Int(dueAt.timeIntervalSince1970))"
-        let sec = max(5, dueAt.timeIntervalSinceNow)
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: sec, repeats: false)
-        let req = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
-        try await UNUserNotificationCenter.current().add(req)
+        let interval = max(1, dueAt.timeIntervalSinceNow)
+        let trigger  = UNTimeIntervalNotificationTrigger(timeInterval: interval, repeats: false)
+
+        let request = UNNotificationRequest(
+            identifier: "mem-\(memoryId)",
+            content: content,
+            trigger: trigger
+        )
+
+        do {
+            try await center.add(request)
+        } catch {
+            print("scheduleReminder error: \(error)")
+        }
     }
 
+    /// Удалить все pending/delivered уведомления для конкретного memoryId
+    func removeAll(for memoryId: String) async {
+        let center = UNUserNotificationCenter.current()
+
+        // pending
+        let pending = await center.pendingNotificationRequests()
+        let pendingIds = pending
+            .filter { $0.content.userInfo[Self.userInfoKeyId] as? String == memoryId }
+            .map { $0.identifier }
+
+        if !pendingIds.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: pendingIds)
+        }
+
+        // delivered
+        let delivered = await center.deliveredNotifications()
+        let deliveredIds = delivered
+            .filter { $0.request.content.userInfo[Self.userInfoKeyId] as? String == memoryId }
+            .map { $0.request.identifier }
+
+        if !deliveredIds.isEmpty {
+            center.removeDeliveredNotifications(withIdentifiers: deliveredIds)
+        }
+    }
+
+    // пуш с результатом (опционально)
     func sendResultPush(correct: Bool, expected: String) {
+        let center = UNUserNotificationCenter.current()
+
         let content = UNMutableNotificationContent()
-        content.title = correct ? "Верно 🎉" : "Ошибка"
-        content.body  = correct ? "Ты вспомнил правильно." : "Правильное значение: \(expected)"
+        content.title = correct ? "Верно" : "Почти"
+        content.body  = correct
+            ? "Ты правильно вспомнил: \(expected)"
+            : "Правильный ответ: \(expected)"
         content.sound = .default
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
-        let req = UNNotificationRequest(identifier: "result-\(UUID().uuidString)", content: content, trigger: trigger)
-        UNUserNotificationCenter.current().add(req)
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.5, repeats: false)
+        let request = UNNotificationRequest(
+            identifier: "result-\(UUID().uuidString)",
+            content: content,
+            trigger: trigger
+        )
+
+        center.add(request, withCompletionHandler: nil)
     }
+
+    // MARK: - Обработка ответа на уведомление
 
     func handleResponse(_ response: UNNotificationResponse) {
-        guard let id = response.notification.request.content.userInfo["memoryId"] as? String else { return }
+        let userInfo = response.notification.request.content.userInfo
+        guard let id = userInfo[Self.userInfoKeyId] as? String else { return }
+
         switch response.actionIdentifier {
-        case Self.actionAnswer:
-            if let r = response as? UNTextInputNotificationResponse {
-                let ans = r.userText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if let res = MemoryStore.shared.evaluate(memoryId: id, answer: ans) {
+
+        // Пользователь нажал кнопку "Ответить" прямо в баннере
+        case Self.actionAnswerId:
+            if let textResp = response as? UNTextInputNotificationResponse {
+                let answer = textResp.userText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !answer.isEmpty else { return }
+
+                if let res = MemoryStore.shared.evaluate(memoryId: id, answer: answer) {
                     sendResultPush(correct: res.correct, expected: res.expected)
                 }
             }
+
+        // Пользователь просто нажал по уведомлению (открыть)
         case UNNotificationDefaultActionIdentifier:
-            WindowService.shared.showAnswer(memoryId: id)
+            // СРАЗУ открываем окно проверки
+            Task { @MainActor in
+                WindowService.shared.showAnswerSheet(memoryId: id)
+            }
+
         default:
             break
         }

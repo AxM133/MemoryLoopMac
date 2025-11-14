@@ -1,56 +1,144 @@
 import SwiftUI
 
 struct AnswerView: View {
-    @EnvironmentObject var store: MemoryStore
     let memoryId: String
-    let onClose: () -> Void
+
+    @EnvironmentObject private var store: MemoryStore
+    @EnvironmentObject private var windows: WindowService
 
     @State private var answer: String = ""
+    @State private var isChecking: Bool = false
     @State private var checked: Bool? = nil
     @State private var expected: String = ""
+    @State private var userAnswer: String = ""
+
+    // фокус для инпута
+    @FocusState private var isFieldFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Проверка").font(.headline)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Проверка")
+                .font(.title3.weight(.semibold))
 
-            TextField("Введите ответ…", text: $answer)
-                .textFieldStyle(.roundedBorder)
-                .disabled(checked != nil)
+            // подсказка сверху
+            Text(checked == nil
+                 ? "Введи то, что запоминал и нажми Enter."
+                 : "Результат проверки:")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
 
-            HStack {
-                Spacer()
-                Button(checked == nil ? "Отправить" : "Закрыть") {
-                    if checked == nil {
-                        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !trimmed.isEmpty else { return }
-                        if let res = store.evaluate(memoryId: memoryId, answer: trimmed) {
-                            checked  = res.correct
-                            expected = res.expected
-                            NotificationManager.shared.sendResultPush(correct: res.correct, expected: res.expected)
-                        } else {
-                            onClose()
-                        }
-                    } else {
-                        onClose()
+            // 1) Режим ввода ответа
+            if checked == nil {
+                TextField("Ответ…", text: $answer)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isFieldFocused)
+                    .disabled(isChecking)
+                    .onSubmit {
+                        handleSubmit()
                     }
+
+                HStack(spacing: 12) {
+                    Button("Проверить") {
+                        handleSubmit()
+                    }
+                    .keyboardShortcut(.return)   // Enter
+                    .buttonStyle(.borderedProminent)
+                    .disabled(answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isChecking)
+
+                    Button("Закрыть") {
+                        windows.closeAnswerSheet()
+                    }
+                    .keyboardShortcut(.escape)
                 }
-                .keyboardShortcut(.defaultAction)
             }
 
-            if let ok = checked {
-                Divider().padding(.vertical, 2)
-                if ok {
-                    Text("🎉 Верно!").font(.subheadline).bold()
-                } else {
-                    HStack(spacing: 6) {
-                        Text("Неверно.").font(.subheadline).bold()
-                        Text("Правильно: \(expected)").foregroundStyle(.secondary)
+            // 2) Режим результата
+            if let checked = checked {
+                Spacer(minLength: 8)
+
+                VStack(alignment: .center, spacing: 12) {
+                    // большой стикер
+                    Text(checked ? "🎉" : "❌")
+                        .font(.system(size: 60))
+
+                    Text(checked ? "Верно!" : "Неверно")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(checked ? Color.primary : Color.red)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 4) {
+                            Text("Твой ответ:")
+                                .fontWeight(.medium)
+                            Text(userAnswer)
+                                .font(.body.monospaced())
+                        }
+
+                        HStack(spacing: 4) {
+                            Text("Нужно было вспомнить:")
+                                .fontWeight(.medium)
+                            Text(expected)
+                                .font(.body.monospaced())
+                        }
                     }
+                    .font(.subheadline)
+
+                    HStack {
+                        Spacer()
+                        Button("Закрыть") {
+                            windows.closeAnswerSheet()
+                        }
+                        // второй Enter после результата — закрывает окно
+                        .keyboardShortcut(.return)
+                        .buttonStyle(.borderedProminent)
+                        Spacer()
+                    }
+                    .padding(.top, 8)
                 }
+                .frame(maxWidth: .infinity)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+        .frame(minWidth: 380)
+        .onAppear {
+            // небольшая задержка, чтобы панель успела появиться, и сразу фокус в поле
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                isFieldFocused = true
             }
         }
-        .padding(14)
-        .frame(minWidth: 360, idealWidth: 380, maxWidth: 400,
-               minHeight: 160, idealHeight: 190, maxHeight: 210)
+    }
+
+    // MARK: - Logic
+
+    /// Обработка Enter / кнопки "Проверить"
+    /// 1-й Enter — проверка, показ результата
+    /// 2-й Enter (когда checked != nil) — закрытие окна
+    private func handleSubmit() {
+        // если уже показан результат — закрываем окно
+        if checked != nil {
+            windows.closeAnswerSheet()
+            return
+        }
+
+        runCheck()
+    }
+
+    /// Проверяет ответ и показывает результат (но не закрывает окно)
+    private func runCheck() {
+        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard !isChecking else { return }
+
+        isChecking = true
+
+        if let res = store.evaluate(memoryId: memoryId, answer: trimmed) {
+            checked = res.correct
+            expected = res.expected
+            userAnswer = res.user
+        }
+
+        isChecking = false
+        isFieldFocused = false           // убираем фокус с поля, так как оно скрыто
     }
 }

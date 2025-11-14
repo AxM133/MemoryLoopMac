@@ -4,13 +4,17 @@ import Combine
 @MainActor
 final class AppState: ObservableObject {
     static let shared = AppState()
-    private init() {}
 
     @Published var pendingAnswerMemoryId: String? = nil
 
-    func openAnswer(for memoryId: String) { pendingAnswerMemoryId = memoryId }
-    func consumePendingAnswerId() -> String? {
-        defer { pendingAnswerMemoryId = nil }
-        return pendingAnswerMemoryId
+    func setPendingAnswer(id: String) {
+        pendingAnswerMemoryId = id
+    }
+
+    @discardableResult
+    func consumePendingAnswer() -> String? {
+        let v = pendingAnswerMemoryId
+        pendingAnswerMemoryId = nil
+        return v
     }
 }
